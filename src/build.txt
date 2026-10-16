@@ -1,0 +1,34 @@
+Phase 1 Build: 
+	g++ -std=c++17 -Wall -Wextra -o server main.cpp
+	./server
+	
+test	curl -v http://localhost:8080/
+
+Phase 2 Build:
+	g++ -std=c++17 -Wall -Wextra -Iinclude src/*.cpp -o server
+	./server
+	
+test	curl -i http://localhost:8080/                       # 200
+	curl -i http://localhost:8080/nope                   # 404
+	curl -i -X POST http://localhost:8080/               # 405 + Allow header
+	curl -i -X POST -d "hello" http://localhost:8080/echo   # 200, body "hello"
+	printf 'GARBAGE\r\n\r\n' | nc localhost 8080         # 400 malformed request line
+	printf 'GET / HTTP/1.1\r\n\r\n' | nc localhost 8080  # 400 missing Host
+	printf 'GET / HTTP/2.0\r\nHost: x\r\n\r\n' | nc localhost 8080  # 505
+	
+Phase 3 Build:
+	g++ -std=c++17 -Wall -Wextra -Iinclude src/*.cpp -o server
+	./server
+
+test	curl -i http://localhost:8080/            # index.html, text/html
+	curl -i http://localhost:8080/style.css   # text/css
+	curl -i http://localhost:8080/test.txt    # text/plain
+	curl -i http://localhost:8080/missing     # 404
+
+traversal attacks
+	curl --path-as-is -i http://localhost:8080/../../etc/passwd
+	curl --path-as-is -i "http://localhost:8080/%2e%2e/%2e%2e/etc/passwd"
+	curl --path-as-is -i http://localhost:8080//etc/passwd
+	curl --path-as-is -i "http://localhost:8080/%00"
+	
+	
