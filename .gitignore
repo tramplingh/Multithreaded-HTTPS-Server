@@ -1,0 +1,15 @@
+# Build outputs
+server
+https_server
+build/
+*.o
+
+# Never commit private keys. Regenerate the dev cert locally (see README).
+cert/*.key
+cert/*.crt
+cert/*.pem
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store

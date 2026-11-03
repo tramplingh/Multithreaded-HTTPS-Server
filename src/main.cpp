@@ -1,5 +1,4 @@
-// TCP server + HTTP/1.1 parser + static file serving
-// socket() -> bind() -> listen() -> accept() -> recv() -> send() -> close()
+// TCP server + TLS (OpenSSL) + HTTP parser + static file serving + thread pool
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -7,15 +6,25 @@
 #include <unistd.h>
 #include <sys/time.h>
 
+#include <chrono>
+#include <csignal>
 #include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <mutex>
+#include <thread>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+
 
 #include <http_parser.hpp>
 #include <http_request.hpp>
 #include <http_response.hpp>
 #include "static_file_handler.hpp"
+#include "thread_pool.hpp"
+#include "tls.hpp"
 
 using namespace std;
 
@@ -23,6 +32,19 @@ constexpr int PORT = 8080;
 constexpr int BACKLOG = 128;
 constexpr int RECV_TIMEOUT_SEC = 5;
 constexpr const char* DOCUMENT_ROOT = "./www";
+constexpr const char* CERT_FILE = "./cert/server.crt";
+constexpr const char* KEY_FILE = "./cert/server.key";
+constexpr size_t NUM_THREADS = 4;
+constexpr size_t MAX_QUEUE = 256;
+
+volatile sig_atomic_t g_running = 1;
+void on_signal(int){ g_running = 0; }
+
+mutex g_log_mutex;
+void log_line(const string& line){
+	lock_guard<mutex> lock(g_log_mutex);
+	cout<<line<<"\n";
+}
 
 // Calls recv() until parser says request is complete or broken.
 // Returns false if connection dies.
@@ -51,6 +73,10 @@ bool read_requests(int fd, HttpRequest& req, ParseResult& result){
 }
 
 HttpResponse handle_request(const HttpRequest& req, const StaticFileHandler& files){
+	if(req.path == "/slow"){
+		this_thread::sleep_for(chrono::seconds(2));
+		return HttpResponse::make(200, "slow response done\n");
+	}
 	if(req.path == "/echo"){
 		if(req.method != "POST"){
 			HttpResponse r = HttpResponse::make(405, "405 Method Not Allowed\n");
@@ -97,11 +123,13 @@ void handle_client(int client_fd, const StaticFileHandler& files){
 	
 	HttpResponse resp;
 	if(result.status == ParseStatus::Error){
-		cout<<" -> parse error "<<result.error_code<<": "<<result.error_msg<<"\n";
+		log_line(" -> parse error " +  to_string(result.error_code) + ": " + result.error_msg);
 		resp = HttpResponse::make(result.error_code, result.error_msg + "\n");
 	} else{
 		resp = handle_request(req, files);
-		cout<<" -> "<<req.method<<" "<<req.path<<" "<<req.version<<" => "<<resp.status<<" ("<<resp.body.size()<<"B)\n";
+		ostringstream line;
+		line<<" -> "<<req.method<<" "<<req.path<<" "<<req.version<<" => "<<resp.status<<" )"<<resp.body.size()<<"B)";
+		log_line(line.str());
 	}
 	
 	send_all(client_fd, resp.serialize());
@@ -110,6 +138,13 @@ void handle_client(int client_fd, const StaticFileHandler& files){
 
 // main function
 int main(){
+	struct sigaction sa{};
+	sa.sa_handler = on_signal;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	sigaction(SIGINT, &sa, nullptr);
+	sigaction(SIGTERM, &sa, nullptr);
+	
 	StaticFileHandler files(DOCUMENT_ROOT);
 	if(!files.ok()){
 		std::cerr<<"Document root '"<<DOCUMENT_ROOT<<"' not found. Run the server from the project root.\n";
@@ -140,9 +175,11 @@ int main(){
 		return 1;
 	}
 	
-	cout<<"Serving "<<DOCUMENT_ROOT<<" on port "<<PORT<<"...\n";
+	ThreadPool pool(NUM_THREADS, MAX_QUEUE);
 	
-	while(true){
+	cout<<"Serving "<<DOCUMENT_ROOT<<" on port "<<PORT<<" with "<<NUM_THREADS<<" worker threads...\n";
+	
+	while(g_running){
 		sockaddr_in client_addr{};
 		socklen_t client_len = sizeof(client_addr);
 		int client_fd = accept(sfd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
@@ -153,13 +190,17 @@ int main(){
 			break;
 		}
 		
-		char ip[INET_ADDRSTRLEN];
-		inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
-		cout<<"Connection from "<<ip<<":"<<ntohs(client_addr.sin_port)<<"\n";
+		bool queued = pool.enqueue([client_fd, &files] {
+			handle_client(client_fd, files);
+		});
 		
-		handle_client(client_fd, files);
+		if(!queued){
+			send_all(client_fd, HttpResponse::make(503, "503 Service Unavailable\n").serialize());
+			close(client_fd);
+		}
 	}
 	
+	cout<<"\nShutting down...\n";
 	close(sfd);
 	return 0;
 }
