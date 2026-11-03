@@ -1,9 +1,9 @@
-#cpp-https-server
-
+# cpp-https-server
+ 
 A multithreaded HTTPS/1.1 server written from scratch in C++17 on POSIX sockets and OpenSSL. It is a learning-focused systems project: small enough to read end to end, with every piece (parser, thread pool, router, TLS wrapper, logger, config loader) written by hand.
-
+ 
 **Highlights**
-
+ 
 - TCP server built directly on `socket` / `bind` / `listen` / `accept`
 - Hand-written HTTP/1.1 request parser with strict validation and size limits
 - Fixed-size thread pool with a bounded task queue
